@@ -76,6 +76,22 @@ async function blobToDataUrl(blob: Blob) {
   });
 }
 
+async function readJsonSafely<T>(response: Response): Promise<T | null> {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+
+  const text = await response.text();
+
+  if (!text.trim()) {
+    return null;
+  }
+
+  return JSON.parse(text) as T;
+}
+
 async function downloadCard(record: CardRecord) {
   const response = await fetch(`/api/cards/${record.id}/photo`);
 
@@ -214,10 +230,13 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
         method: 'POST',
         body: payload,
       });
-      const json = (await response.json()) as { error?: string };
+      const json = await readJsonSafely<{ error?: string }>(response);
 
       if (!response.ok) {
-        throw new Error(json.error || 'Unable to issue the card.');
+        throw new Error(
+          json?.error ||
+            'Unable to issue the card. The server returned an unexpected response.',
+        );
       }
 
       setFormState(initialFormState);
@@ -244,10 +263,13 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
         },
         body: JSON.stringify({ status }),
       });
-      const json = (await response.json()) as { error?: string };
+      const json = await readJsonSafely<{ error?: string }>(response);
 
       if (!response.ok) {
-        throw new Error(json.error || 'Unable to update status.');
+        throw new Error(
+          json?.error ||
+            'Unable to update status. The server returned an unexpected response.',
+        );
       }
 
       startTransition(() => router.refresh());
