@@ -15,6 +15,18 @@ function isNetlifyRuntime() {
   return Boolean(process.env.NETLIFY || process.env.NETLIFY_SITE_ID);
 }
 
+function getNetlifyStore(name: string) {
+  const siteID =
+    process.env.NETLIFY_BLOBS_SITE_ID || process.env.NETLIFY_SITE_ID;
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
+
+  if (siteID && token) {
+    return getStore(name, { siteID, token });
+  }
+
+  return getStore(name);
+}
+
 function getLocalFilePath(key: string) {
   return path.join(LOCAL_STORAGE_DIRECTORY, key);
 }
@@ -32,7 +44,7 @@ export async function uploadPhoto(key: string, file: File) {
   const cacheControl = 'public, max-age=86400';
 
   if (isNetlifyRuntime()) {
-    await getStore(FILE_STORE_NAME).set(key, file, {
+    await getNetlifyStore(FILE_STORE_NAME).set(key, file, {
       metadata: {
         contentType,
         cacheControl,
@@ -55,7 +67,7 @@ export async function uploadPhoto(key: string, file: File) {
 
 export async function getPhoto(key: string): Promise<StoredPhoto | null> {
   if (isNetlifyRuntime()) {
-    const entry = await getStore(FILE_STORE_NAME).getWithMetadata(key, {
+    const entry = await getNetlifyStore(FILE_STORE_NAME).getWithMetadata(key, {
       type: 'blob',
     });
 

@@ -11,6 +11,18 @@ function isNetlifyRuntime() {
   return Boolean(process.env.NETLIFY || process.env.NETLIFY_SITE_ID);
 }
 
+function getNetlifyStore(name: string) {
+  const siteID =
+    process.env.NETLIFY_BLOBS_SITE_ID || process.env.NETLIFY_SITE_ID;
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
+
+  if (siteID && token) {
+    return getStore(name, { siteID, token });
+  }
+
+  return getStore(name);
+}
+
 function getCardKey(id: string) {
   return `cards/${id}.json`;
 }
@@ -45,7 +57,7 @@ function sortCards(cards: CardRecord[]) {
 
 export async function listCards() {
   if (isNetlifyRuntime()) {
-    const store = getStore(CARD_RECORD_STORE);
+    const store = getNetlifyStore(CARD_RECORD_STORE);
     const { blobs } = await store.list({ prefix: 'cards/' });
 
     const cards = await Promise.all(
@@ -63,7 +75,7 @@ export async function listCards() {
 
 export async function getCard(id: string) {
   if (isNetlifyRuntime()) {
-    const record = await getStore(CARD_RECORD_STORE).get(getCardKey(id), {
+    const record = await getNetlifyStore(CARD_RECORD_STORE).get(getCardKey(id), {
       type: 'json',
     });
 
@@ -76,7 +88,10 @@ export async function getCard(id: string) {
 
 export async function createCard(input: NewCardRecord) {
   if (isNetlifyRuntime()) {
-    await getStore(CARD_RECORD_STORE).set(getCardKey(input.id), JSON.stringify(input));
+    await getNetlifyStore(CARD_RECORD_STORE).set(
+      getCardKey(input.id),
+      JSON.stringify(input),
+    );
     return;
   }
 
@@ -99,7 +114,7 @@ export async function updateCardStatus(id: string, status: CardStatus) {
       updatedAt: Date.now(),
     };
 
-    await getStore(CARD_RECORD_STORE).set(
+    await getNetlifyStore(CARD_RECORD_STORE).set(
       getCardKey(id),
       JSON.stringify(updated),
     );
