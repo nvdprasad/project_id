@@ -1,8 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useMemo, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import type { CardRecord } from '@/db/schema';
 
 type IdCardStudioProps = {
@@ -43,6 +42,8 @@ const statusLabel: Record<string, string> = {
   expired: 'Expired',
 };
 
+const LOCAL_STORAGE_KEY = 'cardmint-demo-cards';
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('en', {
     month: 'short',
@@ -76,31 +77,15 @@ async function blobToDataUrl(blob: Blob) {
   });
 }
 
-async function readJsonSafely<T>(response: Response): Promise<T | null> {
-  const contentType = response.headers.get('content-type') || '';
-
-  if (!contentType.includes('application/json')) {
-    return null;
-  }
-
-  const text = await response.text();
-
-  if (!text.trim()) {
-    return null;
-  }
-
-  return JSON.parse(text) as T;
+async function fileToDataUrl(file: File) {
+  return blobToDataUrl(file);
 }
 
 async function downloadCard(record: CardRecord) {
-  const response = await fetch(`/api/cards/${record.id}/photo`);
-
-  if (!response.ok) {
-    throw new Error('Unable to load photo for export.');
-  }
-
-  const imageBlob = await response.blob();
-  const imageUrl = await blobToDataUrl(imageBlob);
+  const imageUrl =
+    record.photoKey?.startsWith('data:')
+      ? record.photoKey
+      : `/api/cards/${record.id}/photo`;
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="680" viewBox="0 0 1120 680">
       <defs>
@@ -165,8 +150,6 @@ async function downloadCard(record: CardRecord) {
 }
 
 export function IdCardStudio({ initialCards }: IdCardStudioProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
   const [mountedAt] = useState(() => Date.now());
   const [formState, setFormState] = useState(initialFormState);
   const [photo, setPhoto] = useState<File | null>(null);
@@ -174,11 +157,37 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [cards, setCards] = useState<CardRecord[]>(() => {
+    if (typeof window === 'undefined') {
+      return initialCards;
+    }
+
+    try {
+      const storedCards = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+
+      if (!storedCards) {
+        return initialCards;
+      }
+
+      return JSON.parse(storedCards) as CardRecord[];
+    } catch (error) {
+      console.error('Unable to restore cards from browser storage.', error);
+      return initialCards;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cards));
+    } catch (error) {
+      console.error('Unable to persist cards in browser storage.', error);
+    }
+  }, [cards]);
 
   const filteredCards = useMemo(() => {
     const term = search.trim().toLowerCase();
 
-    return initialCards.filter((card) => {
+    return cards.filter((card) => {
       const matchesSearch =
         !term ||
         [
@@ -193,21 +202,21 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
 
       return matchesSearch && matchesStatus;
     });
-  }, [initialCards, search, statusFilter]);
+  }, [cards, search, statusFilter]);
 
   const stats = useMemo(
     () => ({
-      total: initialCards.length,
-      active: initialCards.filter((card) => card.status === 'active').length,
-      inactive: initialCards.filter((card) => card.status === 'inactive').length,
-      expiringSoon: initialCards.filter((card) => {
+      total: cards.length,
+      active: cards.filter((card) => card.status === 'active').length,
+      inactive: cards.filter((card) => card.status === 'inactive').length,
+      expiringSoon: cards.filter((card) => {
         const expiry = new Date(card.expiryDate).getTime();
         const thirtyDays = 30 * 24 * 60 * 60 * 1000;
 
         return expiry >= mountedAt && expiry <= mountedAt + thirtyDays;
       }).length,
     }),
-    [initialCards, mountedAt],
+    [cards, mountedAt],
   );
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -222,27 +231,44 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
     setNotice(null);
 
     try {
-      const payload = new FormData();
-      Object.entries(formState).forEach(([key, value]) => payload.append(key, value));
-      payload.append('photo', photo);
+      const id =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}`;
+      const now = Date.now();
+      const photoUrl = await fileToDataUrl(photo);
 
-      const response = await fetch('/api/cards', {
-        method: 'POST',
-        body: payload,
-      });
-      const json = await readJsonSafely<{ error?: string }>(response);
+      const nextCard: CardRecord = {
+        id,
+        fullName: formState.fullName.trim(),
+        employeeId: formState.employeeId.trim(),
+        department: formState.department.trim(),
+        roleTitle: formState.roleTitle.trim(),
+        email: formState.email.trim(),
+        phone: formState.phone.trim(),
+        bloodGroup: formState.bloodGroup.trim() || null,
+        issueDate: formState.issueDate.trim(),
+        expiryDate: formState.expiryDate.trim(),
+        status: 'active',
+        accentColor: formState.accentColor.trim() || '#0f766e',
+        photoKey: photoUrl,
+        notes: formState.notes.trim() || null,
+        createdAt: now,
+        updatedAt: now,
+      };
 
-      if (!response.ok) {
-        throw new Error(
-          json?.error ||
-            'Unable to issue the card. The server returned an unexpected response.',
-        );
-      }
-
+      setCards((current) => [nextCard, ...current]);
       setFormState(initialFormState);
       setPhoto(null);
-      setNotice('ID card issued successfully.');
-      startTransition(() => router.refresh());
+      const fileInput = event.currentTarget.querySelector(
+        'input[type="file"]',
+      ) as HTMLInputElement | null;
+
+      if (fileInput) {
+        fileInput.value = '';
+      }
+
+      setNotice('ID card issued successfully in this browser demo.');
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unable to issue the card.';
@@ -256,23 +282,17 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
     setNotice(null);
 
     try {
-      const response = await fetch(`/api/cards/${id}/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ status }),
-      });
-      const json = await readJsonSafely<{ error?: string }>(response);
-
-      if (!response.ok) {
-        throw new Error(
-          json?.error ||
-            'Unable to update status. The server returned an unexpected response.',
-        );
-      }
-
-      startTransition(() => router.refresh());
+      setCards((current) =>
+        current.map((card) =>
+          card.id === id
+            ? {
+                ...card,
+                status: status as CardRecord['status'],
+                updatedAt: Date.now(),
+              }
+            : card,
+        ),
+      );
     } catch (error) {
       setNotice(
         error instanceof Error ? error.message : 'Unable to update status.',
@@ -514,7 +534,7 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
 
             <button
               type="submit"
-              disabled={submitting || isPending}
+              disabled={submitting}
               className="mt-6 inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
             >
               {submitting ? 'Issuing card...' : 'Issue ID card'}
@@ -582,7 +602,11 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
                     <p className="mt-1 text-sm text-slate-200">{card.roleTitle}</p>
                     <div className="mt-6 grid grid-cols-[90px_1fr] items-start gap-4">
                       <Image
-                        src={`/api/cards/${card.id}/photo`}
+                        src={
+                          card.photoKey?.startsWith('data:')
+                            ? card.photoKey
+                            : `/api/cards/${card.id}/photo`
+                        }
                         alt={card.fullName}
                         width={90}
                         height={110}
@@ -635,7 +659,6 @@ export function IdCardStudio({ initialCards }: IdCardStudioProps) {
                             key={status}
                             type="button"
                             onClick={() => handleStatusChange(card.id, status)}
-                            disabled={isPending}
                             className={`rounded-full px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${
                               card.status === status
                                 ? 'bg-slate-950 text-white'
