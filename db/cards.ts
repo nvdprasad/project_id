@@ -1,83 +1,114 @@
-import { env } from 'cloudflare:workers';
-import { desc, eq } from 'drizzle-orm';
-import { getDb } from './index';
-import { cards } from './schema';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { getStore } from '@netlify/blobs';
+import type { CardRecord, CardStatus, NewCardRecord } from './schema';
 
-let ensureCardsTablePromise: Promise<void> | null = null;
+const CARD_RECORD_STORE = 'cardmint-records';
+const LOCAL_DATA_DIRECTORY = path.join(process.cwd(), '.local-data');
+const LOCAL_CARD_FILE = path.join(LOCAL_DATA_DIRECTORY, 'cards.json');
 
-async function ensureCardsTable() {
-  if (ensureCardsTablePromise) {
-    return ensureCardsTablePromise;
+function isNetlifyRuntime() {
+  return Boolean(process.env.NETLIFY || process.env.NETLIFY_SITE_ID);
+}
+
+function getCardKey(id: string) {
+  return `cards/${id}.json`;
+}
+
+async function ensureLocalDataDirectory() {
+  await fs.mkdir(LOCAL_DATA_DIRECTORY, { recursive: true });
+}
+
+async function readLocalCards() {
+  await ensureLocalDataDirectory();
+
+  try {
+    const content = await fs.readFile(LOCAL_CARD_FILE, 'utf8');
+    return JSON.parse(content) as CardRecord[];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
   }
+}
 
-  if (!env.DB) {
-    throw new Error(
-      'Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database.',
-    );
-  }
+async function writeLocalCards(cards: CardRecord[]) {
+  await ensureLocalDataDirectory();
+  await fs.writeFile(LOCAL_CARD_FILE, JSON.stringify(cards, null, 2));
+}
 
-  ensureCardsTablePromise = env.DB
-    .batch([
-      env.DB.prepare(
-        `CREATE TABLE IF NOT EXISTS cards (
-          id text PRIMARY KEY NOT NULL,
-          full_name text NOT NULL,
-          employee_id text NOT NULL,
-          department text NOT NULL,
-          role_title text NOT NULL,
-          email text NOT NULL,
-          phone text NOT NULL,
-          blood_group text,
-          issue_date text NOT NULL,
-          expiry_date text NOT NULL,
-          status text DEFAULT 'active' NOT NULL,
-          accent_color text DEFAULT '#0f766e' NOT NULL,
-          photo_key text,
-          notes text,
-          created_at integer NOT NULL,
-          updated_at integer NOT NULL
-        )`,
-      ),
-      env.DB.prepare(
-        'CREATE INDEX IF NOT EXISTS idx_cards_status ON cards (status)',
-      ),
-      env.DB.prepare(
-        'CREATE INDEX IF NOT EXISTS idx_cards_department ON cards (department)',
-      ),
-      env.DB.prepare(
-        'CREATE INDEX IF NOT EXISTS idx_cards_created_at ON cards (created_at)',
-      ),
-      env.DB.prepare(
-        'CREATE INDEX IF NOT EXISTS idx_cards_employee_id ON cards (employee_id)',
-      ),
-      env.DB.prepare('PRAGMA optimize'),
-    ])
-    .then(() => undefined)
-    .catch((error) => {
-      ensureCardsTablePromise = null;
-      throw error;
-    });
-
-  return ensureCardsTablePromise;
+function sortCards(cards: CardRecord[]) {
+  return cards.sort((left, right) => right.createdAt - left.createdAt);
 }
 
 export async function listCards() {
-  await ensureCardsTable();
-  return getDb().select().from(cards).orderBy(desc(cards.createdAt));
+  if (isNetlifyRuntime()) {
+    const store = getStore(CARD_RECORD_STORE);
+    const { blobs } = await store.list({ prefix: 'cards/' });
+
+    const cards = await Promise.all(
+      blobs.map(async ({ key }) => {
+        const record = await store.get(key, { type: 'json' });
+        return record as CardRecord | null;
+      }),
+    );
+
+    return sortCards(cards.filter((record): record is CardRecord => Boolean(record)));
+  }
+
+  return sortCards(await readLocalCards());
 }
 
-export async function createCard(input: typeof cards.$inferInsert) {
-  await ensureCardsTable();
-  await getDb().insert(cards).values(input);
+export async function getCard(id: string) {
+  if (isNetlifyRuntime()) {
+    const record = await getStore(CARD_RECORD_STORE).get(getCardKey(id), {
+      type: 'json',
+    });
+
+    return (record as CardRecord | null) ?? null;
+  }
+
+  const cards = await readLocalCards();
+  return cards.find((record) => record.id === id) ?? null;
 }
 
-export async function updateCardStatus(id: string, status: string) {
-  await ensureCardsTable();
-  await getDb()
-    .update(cards)
-    .set({
+export async function createCard(input: NewCardRecord) {
+  if (isNetlifyRuntime()) {
+    await getStore(CARD_RECORD_STORE).set(getCardKey(input.id), JSON.stringify(input));
+    return;
+  }
+
+  const cards = await readLocalCards();
+  cards.push(input);
+  await writeLocalCards(cards);
+}
+
+export async function updateCardStatus(id: string, status: CardStatus) {
+  if (isNetlifyRuntime()) {
+    const existing = await getCard(id);
+
+    if (!existing) {
+      return;
+    }
+
+    const updated = {
+      ...existing,
       status,
       updatedAt: Date.now(),
-    })
-    .where(eq(cards.id, id));
+    };
+
+    await getStore(CARD_RECORD_STORE).set(
+      getCardKey(id),
+      JSON.stringify(updated),
+    );
+    return;
+  }
+
+  const cards = await readLocalCards();
+  const nextCards = cards.map((card) =>
+    card.id === id ? { ...card, status, updatedAt: Date.now() } : card,
+  );
+  await writeLocalCards(nextCards);
 }
