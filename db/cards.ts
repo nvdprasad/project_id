@@ -57,17 +57,24 @@ function sortCards(cards: CardRecord[]) {
 
 export async function listCards() {
   if (isNetlifyRuntime()) {
-    const store = getNetlifyStore(CARD_RECORD_STORE);
-    const { blobs } = await store.list({ prefix: 'cards/' });
+    try {
+      const store = getNetlifyStore(CARD_RECORD_STORE);
+      const { blobs } = await store.list({ prefix: 'cards/' });
 
-    const cards = await Promise.all(
-      blobs.map(async ({ key }) => {
-        const record = await store.get(key, { type: 'json' });
-        return record as CardRecord | null;
-      }),
-    );
+      const cards = await Promise.all(
+        blobs.map(async ({ key }) => {
+          const record = await store.get(key, { type: 'json' });
+          return record as CardRecord | null;
+        }),
+      );
 
-    return sortCards(cards.filter((record): record is CardRecord => Boolean(record)));
+      return sortCards(
+        cards.filter((record): record is CardRecord => Boolean(record)),
+      );
+    } catch (error) {
+      console.error('Unable to read card records from storage.', error);
+      return [];
+    }
   }
 
   return sortCards(await readLocalCards());
@@ -75,11 +82,16 @@ export async function listCards() {
 
 export async function getCard(id: string) {
   if (isNetlifyRuntime()) {
-    const record = await getNetlifyStore(CARD_RECORD_STORE).get(getCardKey(id), {
-      type: 'json',
-    });
+    try {
+      const record = await getNetlifyStore(CARD_RECORD_STORE).get(getCardKey(id), {
+        type: 'json',
+      });
 
-    return (record as CardRecord | null) ?? null;
+      return (record as CardRecord | null) ?? null;
+    } catch (error) {
+      console.error(`Unable to read card ${id} from storage.`, error);
+      return null;
+    }
   }
 
   const cards = await readLocalCards();
