@@ -1,6 +1,5 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { getStore } from '@netlify/blobs';
 
 const FILE_STORE_NAME = 'cardmint-files';
 const LOCAL_STORAGE_DIRECTORY = path.join(process.cwd(), '.local-data', 'files');
@@ -15,7 +14,8 @@ function isNetlifyRuntime() {
   return Boolean(process.env.NETLIFY || process.env.NETLIFY_SITE_ID);
 }
 
-function getNetlifyStore(name: string) {
+async function getNetlifyStore(name: string) {
+  const { getStore } = await import('@netlify/blobs');
   const siteID =
     process.env.NETLIFY_BLOBS_SITE_ID || process.env.NETLIFY_SITE_ID;
   const token = process.env.NETLIFY_BLOBS_TOKEN;
@@ -44,7 +44,8 @@ export async function uploadPhoto(key: string, file: File) {
   const cacheControl = 'public, max-age=86400';
 
   if (isNetlifyRuntime()) {
-    await getNetlifyStore(FILE_STORE_NAME).set(key, file, {
+    const store = await getNetlifyStore(FILE_STORE_NAME);
+    await store.set(key, file, {
       metadata: {
         contentType,
         cacheControl,
@@ -67,7 +68,8 @@ export async function uploadPhoto(key: string, file: File) {
 
 export async function getPhoto(key: string): Promise<StoredPhoto | null> {
   if (isNetlifyRuntime()) {
-    const entry = await getNetlifyStore(FILE_STORE_NAME).getWithMetadata(key, {
+    const store = await getNetlifyStore(FILE_STORE_NAME);
+    const entry = await store.getWithMetadata(key, {
       type: 'blob',
     });
 

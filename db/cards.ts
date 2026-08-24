@@ -1,6 +1,5 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { getStore } from '@netlify/blobs';
 import type { CardRecord, CardStatus, NewCardRecord } from './schema';
 
 const CARD_RECORD_STORE = 'cardmint-records';
@@ -11,7 +10,8 @@ function isNetlifyRuntime() {
   return Boolean(process.env.NETLIFY || process.env.NETLIFY_SITE_ID);
 }
 
-function getNetlifyStore(name: string) {
+async function getNetlifyStore(name: string) {
+  const { getStore } = await import('@netlify/blobs');
   const siteID =
     process.env.NETLIFY_BLOBS_SITE_ID || process.env.NETLIFY_SITE_ID;
   const token = process.env.NETLIFY_BLOBS_TOKEN;
@@ -58,7 +58,7 @@ function sortCards(cards: CardRecord[]) {
 export async function listCards() {
   if (isNetlifyRuntime()) {
     try {
-      const store = getNetlifyStore(CARD_RECORD_STORE);
+      const store = await getNetlifyStore(CARD_RECORD_STORE);
       const { blobs } = await store.list({ prefix: 'cards/' });
 
       const cards = await Promise.all(
@@ -83,9 +83,8 @@ export async function listCards() {
 export async function getCard(id: string) {
   if (isNetlifyRuntime()) {
     try {
-      const record = await getNetlifyStore(CARD_RECORD_STORE).get(getCardKey(id), {
-        type: 'json',
-      });
+      const store = await getNetlifyStore(CARD_RECORD_STORE);
+      const record = await store.get(getCardKey(id), { type: 'json' });
 
       return (record as CardRecord | null) ?? null;
     } catch (error) {
@@ -100,7 +99,8 @@ export async function getCard(id: string) {
 
 export async function createCard(input: NewCardRecord) {
   if (isNetlifyRuntime()) {
-    await getNetlifyStore(CARD_RECORD_STORE).set(
+    const store = await getNetlifyStore(CARD_RECORD_STORE);
+    await store.set(
       getCardKey(input.id),
       JSON.stringify(input),
     );
@@ -126,7 +126,8 @@ export async function updateCardStatus(id: string, status: CardStatus) {
       updatedAt: Date.now(),
     };
 
-    await getNetlifyStore(CARD_RECORD_STORE).set(
+    const store = await getNetlifyStore(CARD_RECORD_STORE);
+    await store.set(
       getCardKey(id),
       JSON.stringify(updated),
     );
